@@ -6,9 +6,10 @@ package makepdf;
 
 // The PDF generation service definition.
 service MakePDF {
+  
   // generate a PDF
   rpc GeneratePDF (GeneratePDFRequest) returns (GeneratePDFReply);
-  
+
   // bi-directional streaming for batch PDF generation
   rpc StreamPDFs (stream GeneratePDFRequest) returns (stream GeneratePDFReply);
 }

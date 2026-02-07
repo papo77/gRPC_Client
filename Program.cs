@@ -1,23 +1,166 @@
-﻿using Grpc.Core;
+﻿using System.Net.Cache;
+using System.Threading.Channels;
+using System.Text;
+using Grpc.Core;
 using Grpc.Net.Client;
 using MakePDF;
-
-namespace MakePDFClient;
+using Microsoft.Extensions.Configuration;
 
 class Program
 {
+    private static string? outputFolder = string.Empty;
+    private static bool writeToDisk = false;
+    
+    // Enhanced channel setup with bounded capacity for backpressure
+    private static readonly Channel<GeneratePDFRequest> RequestChannel = Channel.CreateBounded<GeneratePDFRequest>(new BoundedChannelOptions(1000)
+    {
+        FullMode = BoundedChannelFullMode.Wait,
+        SingleReader = false,
+        SingleWriter = false
+    });
+    
+    // Channel for handling PDF responses
+    private static readonly Channel<GeneratePDFReply> ResponseChannel = Channel.CreateUnbounded<GeneratePDFReply>();
+
+    // Enhanced processing with proper cancellation and error handling
+    static async Task ProcessRequestChannel(ChannelReader<GeneratePDFRequest> reader, IClientStreamWriter<GeneratePDFRequest> streamWriter, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var request in reader.ReadAllAsync(cancellationToken))
+            {
+                //Console.WriteLine($"Sending PDF request for {request.FirstName} {request.LastName}");
+                await streamWriter.WriteAsync(request, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Request processing was cancelled.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in request processing: {ex.Message}");
+        }
+        finally
+        {
+            await streamWriter.CompleteAsync();
+            Console.WriteLine("Request stream completed.");
+        }
+    }
+
+    // Enhanced response processing with channels
+    static async Task ProcessResponseChannel(IAsyncStreamReader<GeneratePDFReply> responseStream, ChannelWriter<GeneratePDFReply> responseWriter, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var response in responseStream.ReadAllAsync(cancellationToken))
+            {
+                Console.WriteLine($"Received PDF response with {response.Pdf.Length:n0} bytes");
+                
+                // Write to channel for further processing
+                await responseWriter.WriteAsync(response, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Response processing was cancelled.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in response processing: {ex.Message}");
+        }
+        finally
+        {
+            responseWriter.Complete();
+            Console.WriteLine("Response stream processing completed.");
+        }
+    }
+
+    // Concurrent PDF file writer using channels
+    static async Task ProcessPDFWriter(ChannelReader<GeneratePDFReply> reader, 
+        CancellationToken cancellationToken)
+    {
+        // Process PDFs concurrently with limited parallelism
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Environment.ProcessorCount,
+            CancellationToken = cancellationToken
+        };
+
+        try
+        {
+            await Parallel.ForEachAsync(reader.ReadAllAsync(cancellationToken), parallelOptions, 
+                async (response, token) =>
+                {
+                    if (response.Pdf?.Length > 0)
+                    {
+                        await WritePDFToDisk(response.Pdf.ToByteArray(), token);
+                    }
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("PDF writing was cancelled.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in PDF writing: {ex.Message}");
+        }
+    }
+
+    static async Task WritePDFToDisk(byte[] pdfData, CancellationToken cancellationToken = default)
+    {
+        if (!writeToDisk || string.IsNullOrEmpty(outputFolder)) return;
+
+        try
+        {
+            string fileName = $"pdf_{Guid.NewGuid()}.pdf";
+            string filePath = Path.Combine(outputFolder!, fileName);
+            
+            await File.WriteAllBytesAsync(filePath, pdfData, cancellationToken);
+            Console.WriteLine($"Saved PDF: {fileName}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving PDF: {ex.Message}");
+        }
+    }
+
     static async Task Main(string[] args)
     {
+          var builder = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", true, true);
+        IConfiguration config = builder.Build();
+
+        string? serviceUrl =  String.IsNullOrEmpty(config["ServiceURL"]) == false ? config["ServiceURL"] : throw new Exception("ServiceURL is not configured in appsettings.json");
+        outputFolder = String.IsNullOrEmpty(config["OutputPath"]) == false ? config["OutputPath"] : Path.Combine(Directory.GetCurrentDirectory(), "output");
+        writeToDisk = bool.TryParse(config["writeToDisk"], out var result) ? result : false;    
+
+       
+       
         Console.WriteLine("Starting bi-directional streaming gRPC client...");
-        
+
+        // Configure HttpClientHandler to ignore certificate validation
+        var httpHandler = new HttpClientHandler();
+        httpHandler.ServerCertificateCustomValidationCallback =
+            (message, certificate, chain, errors) => true;
+
         // The port number should match the server port.
-        using var channel = GrpcChannel.ForAddress("http://localhost:5000");
+        if(String.IsNullOrEmpty(serviceUrl))
+        {
+            Console.WriteLine("Service URL is not configured. Please set the ServiceURL in appsettings.json.");
+            return;
+        }
+
+        using var channel = GrpcChannel.ForAddress(serviceUrl, new GrpcChannelOptions { HttpHandler = httpHandler });
+
         var client = new MakePDF.MakePDF.MakePDFClient(channel);
 
         // Test both unary and bi-directional streaming
         await CallUnaryMethod(client);
         await CallBidirectionalStreaming(client);
-        
+
         Console.WriteLine("Press any key to exit...");
         Console.ReadKey();
     }
@@ -25,7 +168,7 @@ class Program
     private static async Task CallUnaryMethod(MakePDF.MakePDF.MakePDFClient client)
     {
         Console.WriteLine("\n=== Testing Unary Method ===");
-        
+
         try
         {
             var request = new GeneratePDFRequest
@@ -39,58 +182,139 @@ class Program
         }
         catch (RpcException ex)
         {
-            Console.WriteLine($"RPC failed: {ex.Status}");
+            Console.WriteLine($"RPC failed: {ex.ToString()}");
         }
     }
 
     private static async Task CallBidirectionalStreaming(MakePDF.MakePDF.MakePDFClient client)
     {
-        Console.WriteLine("\n=== Testing Bi-directional Streaming ===");
+        Console.WriteLine("\n=== Testing Enhanced Bi-directional Streaming with Channels ===");
         
+        using var cts = new CancellationTokenSource();
+        using var call = client.StreamPDFs(cancellationToken: cts.Token);
+        
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
-            using var call = client.StreamPDFs();
+            // Start concurrent tasks for processing
+            var requestTask = ProcessRequestChannel(RequestChannel.Reader, call.RequestStream, cts.Token);
+            var responseTask = ProcessResponseChannel(call.ResponseStream, ResponseChannel.Writer, cts.Token);
+            var pdfWriterTask = writeToDisk ? ProcessPDFWriter(ResponseChannel.Reader, cts.Token) : Task.CompletedTask;
+
+            // Load and enqueue requests from CSV
+            await LoadRequestsFromCsv();
+
+            // Wait for request processing to complete
+            await requestTask;
             
-            // Start a task to read responses
-            var readTask = Task.Run(async () =>
+            // Wait for response processing to complete
+            await responseTask;
+            
+            // Wait for PDF writing to complete
+            if (writeToDisk)
             {
-                await foreach (var response in call.ResponseStream.ReadAllAsync())
-                {
-                    Console.WriteLine($"Received PDF response with {response.Pdf.Length} bytes");
-                }
-                Console.WriteLine("Response stream completed.");
-            });
-
-            // Send multiple requests
-            var requests = new[]
-            {
-                new GeneratePDFRequest { FirstName = "Alice", LastName = "Smith" },
-                new GeneratePDFRequest { FirstName = "Bob", LastName = "Johnson" },
-                new GeneratePDFRequest { FirstName = "Charlie", LastName = "Brown" },
-                new GeneratePDFRequest { FirstName = "Diana", LastName = "Wilson" },
-            };
-
-            Console.WriteLine("Sending requests...");
-            foreach (var request in requests)
-            {
-                await call.RequestStream.WriteAsync(request);
-                Console.WriteLine($"Sent request for: {request.FirstName} {request.LastName}");
-                
-                // Add some delay between requests to simulate real-world scenario
-                //await Task.Delay(1000);
+                await pdfWriterTask;
             }
 
-            // Signal that we're done sending requests
-            await call.RequestStream.CompleteAsync();
-            Console.WriteLine("Completed sending requests.");
-
-            // Wait for all responses to be received
-            await readTask;
-
+            Console.WriteLine("All streaming operations completed successfully.");
         }
         catch (RpcException ex)
         {
             Console.WriteLine($"RPC failed: {ex.Status}");
+            cts.Cancel(); // Cancel remaining operations
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Unexpected error: {ex.Message}");
+            cts.Cancel(); // Cancel remaining operations
+        }
+        
+        sw.Stop();
+        var elapsed = sw.Elapsed;
+        Console.WriteLine($"Total time taken: {elapsed.Hours:D2}h {elapsed.Minutes:D2}m {elapsed.Seconds:D2}s {elapsed.Milliseconds:D3}ms");
+    }
+
+    private static async Task LoadRequestsFromCsv()
+    {
+        const string path = "./names.csv";
+        
+        try
+        {
+            Console.WriteLine("Loading requests from CSV...");
+            
+            // Use more efficient file reading
+            using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096);
+            using var reader = new StreamReader(fileStream, Encoding.UTF8);
+            
+            string? line;
+            int processedCount = 0;
+            
+            while ((line = await reader.ReadLineAsync()) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                // Use ReadOnlySpan<char> for zero-allocation string operations
+                ReadOnlySpan<char> lineSpan = line.AsSpan().Trim();
+                
+                int commaIndex = lineSpan.IndexOf(',');
+                if (commaIndex > 0 && commaIndex < lineSpan.Length - 1)
+                {
+                    // Extract parts using spans (zero allocation)
+                    ReadOnlySpan<char> lastNameSpan = lineSpan.Slice(0, commaIndex).Trim();
+                    ReadOnlySpan<char> firstNameSpan = lineSpan.Slice(commaIndex + 1).Trim();
+                    
+                    if (!lastNameSpan.IsEmpty && !firstNameSpan.IsEmpty)
+                    {
+                        var request = new GeneratePDFRequest
+                        {
+                            FirstName = firstNameSpan.ToString(),
+                            LastName = lastNameSpan.ToString()
+                        };
+                        
+                        // Write to channel with backpressure handling
+                        await RequestChannel.Writer.WriteAsync(request);
+                        processedCount++;
+                        
+                        // Progress reporting every 100 items
+                        if (processedCount % 100 == 0)
+                        {
+                            Console.WriteLine($"Queued {processedCount} requests...");
+                        }
+                    }
+                }
+            }
+            
+            Console.WriteLine($"Successfully queued {processedCount} requests from CSV.");
+        }
+        catch (FileNotFoundException)
+        {
+            Console.WriteLine($"CSV file not found at: {path}");
+            Console.WriteLine("Adding sample requests instead...");
+            
+            // Add sample requests if file doesn't exist
+            var sampleRequests = new[]
+            {
+                new GeneratePDFRequest { FirstName = "Alice", LastName = "Smith" },
+                new GeneratePDFRequest { FirstName = "Bob", LastName = "Johnson" },
+                new GeneratePDFRequest { FirstName = "Charlie", LastName = "Brown" },
+                new GeneratePDFRequest { FirstName = "Diana", LastName = "Wilson" }
+            };
+            
+            foreach (var request in sampleRequests)
+            {
+                await RequestChannel.Writer.WriteAsync(request);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading CSV: {ex.Message}");
+        }
+        finally
+        {
+            // Signal that we're done adding requests
+            RequestChannel.Writer.Complete();
+            Console.WriteLine("Request loading completed.");
         }
     }
 }
