@@ -5,6 +5,8 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using MakePDF;
 using Microsoft.Extensions.Configuration;
+using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Attributes;
 
 class Program
 {
@@ -128,7 +130,15 @@ class Program
 
     static async Task Main(string[] args)
     {
-          var builder = new ConfigurationBuilder()
+        // Check if benchmark argument is provided
+        if (args.Length > 0 && args[0].Equals("benchmark", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("Running benchmarks...");
+            BenchmarkRunner.Run<GrpcBenchmarks>();
+            return;
+        }
+
+        var builder = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.json", true, true);
         IConfiguration config = builder.Build();
@@ -165,7 +175,7 @@ class Program
         Console.ReadKey();
     }
 
-    private static async Task CallUnaryMethod(MakePDF.MakePDF.MakePDFClient client)
+    public static async Task CallUnaryMethod(MakePDF.MakePDF.MakePDFClient client)
     {
         Console.WriteLine("\n=== Testing Unary Method ===");
 
@@ -186,7 +196,7 @@ class Program
         }
     }
 
-    private static async Task CallBidirectionalStreaming(MakePDF.MakePDF.MakePDFClient client)
+    public static async Task CallBidirectionalStreaming(MakePDF.MakePDF.MakePDFClient client)
     {
         Console.WriteLine("\n=== Testing Enhanced Bi-directional Streaming with Channels ===");
         
