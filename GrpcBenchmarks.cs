@@ -9,8 +9,7 @@ using Microsoft.Extensions.Configuration;
 using System.Net.Http;
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net80)]
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob(RuntimeMoniker.Net10_0)]
 [MinColumn, MaxColumn, MeanColumn, MedianColumn]
 [MarkdownExporterAttribute.GitHub]
 [HtmlExporter]
