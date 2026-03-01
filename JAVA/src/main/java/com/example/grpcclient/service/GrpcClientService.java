@@ -90,9 +90,13 @@ public class GrpcClientService {
                 public void onNext(GeneratePDFReply reply) {
                     try {
                         responseQueue.put(reply);
-                        // Always update progress immediately when response is received
-                        long currentCount = counter.incrementAndGet();
-                        progressBar.updateProgress(currentCount, numberOfItems.get());
+                        
+                        // If write-to-disk is false, immediately increment counter and update progress
+                        if (!properties.writeToDisk()) {
+                            long currentCount = counter.incrementAndGet();                        
+                            progressBar.updateProgress(currentCount, numberOfItems.get());
+                        }
+                        // If write-to-disk is true, counter will be incremented when file is written
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         logger.error("Response processing interrupted", e);
@@ -206,7 +210,8 @@ public class GrpcClientService {
                     try {
                         GeneratePDFReply reply = responseQueue.poll(100, TimeUnit.MILLISECONDS);
                         if (reply == null) {
-                            if (counter.get() >= numberOfItems.get() && numberOfItems.get() > 0) {
+                            // When write-to-disk is true, use filesWritten counter for completion check
+                            if (filesWritten.get() >= numberOfItems.get() && numberOfItems.get() > 0) {
                                 break;
                             }
                             continue;
@@ -226,7 +231,7 @@ public class GrpcClientService {
             futures.add(future);
         }
 
-        logger.info("Started {} PDF writing workers", futures.size());
+       // logger.info("Started {} PDF writing workers", futures.size());
 
         // Wait for all PDF writers to complete
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
@@ -241,10 +246,16 @@ public class GrpcClientService {
             Path filePath = outputPath.resolve(fileName);
 
             Files.write(filePath, pdfData);
-            long count = filesWritten.incrementAndGet();
+            long fileCount = filesWritten.incrementAndGet();
             
-            if (count % 1000 == 0 || count <= 10) {
-               // logger.info("Written {} PDF files to {}", count, outputPath);
+            // When write-to-disk is true, increment counter and update progress after successful write
+            if (properties.writeToDisk()) {
+                long currentCount = counter.incrementAndGet();
+                progressBar.updateProgress(currentCount, numberOfItems.get());
+            }
+            
+            if (fileCount % 1000 == 0 || fileCount <= 10) {
+               // logger.info("Written {} PDF files to {}", fileCount, outputPath);
             }
         } catch (IOException e) {
             logger.error("Error saving PDF", e);
