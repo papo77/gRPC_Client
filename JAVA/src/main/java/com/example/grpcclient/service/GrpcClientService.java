@@ -77,7 +77,8 @@ public class GrpcClientService {
         System.out.println("\n=== Testing Enhanced Bi-directional Streaming with Concurrent Processing ===");
 
         Instant startTime = Instant.now();
-        var countdown = new CountDownLatch(3); // For request processing, response processing, and PDF writing
+        // Countdown: request processing + response processing + (PDF writing if enabled)
+        var countdown = new CountDownLatch(properties.writeToDisk() ? 3 : 2);
 
         try {
             // Create streaming call
@@ -86,10 +87,9 @@ public class GrpcClientService {
                 public void onNext(GeneratePDFReply reply) {
                     try {
                         responseQueue.put(reply);
-                        if (!properties.writeToDisk()) {
-                            long currentCount = counter.incrementAndGet();
-                            progressBar.updateProgress(currentCount, numberOfItems.get());
-                        }
+                        // Always update progress immediately when response is received
+                        long currentCount = counter.incrementAndGet();
+                        progressBar.updateProgress(currentCount, numberOfItems.get());
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         logger.error("Response processing interrupted", e);
@@ -231,8 +231,7 @@ public class GrpcClientService {
             Path filePath = outputPath.resolve(fileName);
 
             Files.write(filePath, pdfData);
-            long currentCount = counter.incrementAndGet();
-            progressBar.updateProgress(currentCount, numberOfItems.get());
+            // Progress is already updated in response observer, don't double count
         } catch (IOException e) {
             logger.error("Error saving PDF", e);
         }

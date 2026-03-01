@@ -8,10 +8,10 @@ grpc:
   client:
     service-url: https://primus.local:5555
     output-path: /Volumes/HotRod/output
-    write-to-disk: true
+    write-to-disk:  true
     show-enhanced-progress-bar: true
     channel-capacity: 1000
-    max-degree-of-parallelism: 8
+    max-degree-of-parallelism: 16
     progress-update-threshold: 10
 
 logging:
