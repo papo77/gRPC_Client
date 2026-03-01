@@ -8,7 +8,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 @SpringBootApplication
-@ConfigurationPropertiesScan
+@ConfigurationPropertiesScan("com.example.grpcclient.config")
 public class GrpcClientApplication implements CommandLineRunner {
 
     private final GrpcClientService grpcClientService;
