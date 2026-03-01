@@ -1,6 +1,5 @@
 package com.example.grpcclient.config;
 
-import com.example.grpcclient.config.GrpcClientProperties;
 import com.example.grpcclient.proto.MakePDFGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;

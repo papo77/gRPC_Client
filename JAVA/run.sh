@@ -61,12 +61,16 @@ package_project() {
 run_application() {
     echo -e "${BLUE}Running the gRPC client application...${NC}"
     
+    # Always do a clean build first to prevent stale class issues after git operations
+    echo -e "${YELLOW}Ensuring clean build to avoid stale classes...${NC}"
+    mvn clean compile
+    
     # Check if packaged jar exists
     if [ -f "target/grpc-client-1.0.0.jar" ]; then
         echo -e "${GREEN}Running packaged application...${NC}"
         java $JAVA_OPTS -jar target/grpc-client-1.0.0.jar
     else
-        echo -e "${YELLOW}Packaged jar not found. Building and running with Maven...${NC}"
+        echo -e "${YELLOW}Packaged jar not found. Running with Maven...${NC}"
         mvn spring-boot:run -Dspring-boot.run.jvmArguments="$JAVA_OPTS"
     fi
 }
@@ -74,13 +78,10 @@ run_application() {
 run_benchmarks() {
     echo -e "${BLUE}Running performance benchmarks...${NC}"
     
-    if [ -f "target/grpc-client-1.0.0.jar" ]; then
-        java $JAVA_OPTS -jar target/grpc-client-1.0.0.jar benchmark  
-    else
-        echo -e "${YELLOW}Packaged jar not found. Building first...${NC}"
-        package_project
-        java $JAVA_OPTS -jar target/grpc-client-1.0.0.jar benchmark
-    fi
+    # Always ensure fresh package for benchmarks
+    echo -e "${YELLOW}Building fresh package for benchmarks...${NC}"
+    package_project
+    java $JAVA_OPTS -jar target/grpc-client-1.0.0.jar benchmark
 }
 
 clean_project() {
@@ -108,7 +109,6 @@ case "${1:-help}" in
         package_project
         ;;
     run)
-        build_project
         run_application
         ;;
     benchmark)
