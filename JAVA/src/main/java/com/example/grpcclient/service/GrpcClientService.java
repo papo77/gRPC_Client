@@ -192,7 +192,7 @@ public class GrpcClientService {
         Path outputPath = Paths.get(properties.outputPath());
         try {
             Files.createDirectories(outputPath);
-            logger.info("Created output directory: {}", outputPath.toAbsolutePath());
+            //logger.info("Created output directory: {}", outputPath.toAbsolutePath());
         } catch (IOException e) {
             logger.error("Failed to create output directory", e);
             return;
@@ -231,8 +231,8 @@ public class GrpcClientService {
         // Wait for all PDF writers to complete
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         
-        logger.info("PDF writing completed. Total files written: {} to {}", 
-                    filesWritten.get(), outputPath.toAbsolutePath());
+        // logger.info("PDF writing completed. Total files written: {} to {}", 
+        //             filesWritten.get(), outputPath.toAbsolutePath());
     }
 
     private void writePDFToDisk(byte[] pdfData, Path outputPath) {
@@ -244,7 +244,7 @@ public class GrpcClientService {
             long count = filesWritten.incrementAndGet();
             
             if (count % 1000 == 0 || count <= 10) {
-                logger.info("Written {} PDF files to {}", count, outputPath);
+               // logger.info("Written {} PDF files to {}", count, outputPath);
             }
         } catch (IOException e) {
             logger.error("Error saving PDF", e);

@@ -6,8 +6,8 @@ public class ProgressBar {
     
     private static final char FILL_CHAR = '█';
     private static final char EMPTY_CHAR = '░';
-    private static final char LEFT_CHAR = '║';
-    private static final char RIGHT_CHAR = '║';
+    private static final char LEFT_CHAR = '│';
+    private static final char RIGHT_CHAR = '│';
     private static final char UPPER_LEFT_CHAR = '┌';
     private static final char UPPER_RIGHT_CHAR = '┐';
     private static final char LOWER_LEFT_CHAR = '└';
