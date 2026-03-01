@@ -18,6 +18,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -41,6 +43,7 @@ public class GrpcClientService {
     private final ExecutorService executorService;
     private final AtomicLong counter = new AtomicLong(0);
     private final AtomicLong numberOfItems = new AtomicLong(0);
+    private final AtomicLong filesWritten = new AtomicLong(0);
 
     public GrpcClientService(MakePDFGrpc.MakePDFBlockingStub blockingStub,
                            MakePDFGrpc.MakePDFStub asyncStub,
@@ -189,40 +192,47 @@ public class GrpcClientService {
         Path outputPath = Paths.get(properties.outputPath());
         try {
             Files.createDirectories(outputPath);
+            logger.info("Created output directory: {}", outputPath.toAbsolutePath());
         } catch (IOException e) {
             logger.error("Failed to create output directory", e);
             return;
         }
 
-        // Use virtual threads for parallel processing
-        List<CompletableFuture<Void>> futures = new ConcurrentLinkedQueue<CompletableFuture<Void>>().stream()
-                .limit(properties.maxDegreeOfParallelism())
-                .map(i -> CompletableFuture.runAsync(() -> {
-                    while (!Thread.currentThread().isInterrupted()) {
-                        try {
-                            GeneratePDFReply reply = responseQueue.poll(100, TimeUnit.MILLISECONDS);
-                            if (reply == null) {
-                                if (counter.get() >= numberOfItems.get() && numberOfItems.get() > 0) {
-                                    break;
-                                }
-                                continue;
+        // Create worker threads for parallel PDF writing
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        for (int i = 0; i < properties.maxDegreeOfParallelism(); i++) {
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        GeneratePDFReply reply = responseQueue.poll(100, TimeUnit.MILLISECONDS);
+                        if (reply == null) {
+                            if (counter.get() >= numberOfItems.get() && numberOfItems.get() > 0) {
+                                break;
                             }
-
-                            if (!reply.getPdf().isEmpty()) {
-                                writePDFToDisk(reply.getPdf().toByteArray(), outputPath);
-                            }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        } catch (Exception e) {
-                            logger.error("Error processing PDF", e);
+                            continue;
                         }
+
+                        if (!reply.getPdf().isEmpty()) {
+                            writePDFToDisk(reply.getPdf().toByteArray(), outputPath);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        logger.error("Error processing PDF", e);
                     }
-                }, executorService))
-                .toList();
+                }
+            }, executorService);
+            futures.add(future);
+        }
+
+        logger.info("Started {} PDF writing workers", futures.size());
 
         // Wait for all PDF writers to complete
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        
+        logger.info("PDF writing completed. Total files written: {} to {}", 
+                    filesWritten.get(), outputPath.toAbsolutePath());
     }
 
     private void writePDFToDisk(byte[] pdfData, Path outputPath) {
@@ -231,7 +241,11 @@ public class GrpcClientService {
             Path filePath = outputPath.resolve(fileName);
 
             Files.write(filePath, pdfData);
-            // Progress is already updated in response observer, don't double count
+            long count = filesWritten.incrementAndGet();
+            
+            if (count % 1000 == 0 || count <= 10) {
+                logger.info("Written {} PDF files to {}", count, outputPath);
+            }
         } catch (IOException e) {
             logger.error("Error saving PDF", e);
         }
